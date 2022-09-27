@@ -4,36 +4,94 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"os/user"
+	"strconv"
 
 	"golang.org/x/crypto/ssh"
 )
 
-var (
-	username         = "ender"
-	serverAddrString = "209.181.69.247:33122"
-	localAddrString  = "localhost:8545"
-	remoteAddrString = "localhost:8545"
-)
+// var (
+// 	username         = "ender"
+// 	serverAddrString = "209.181.69.247:33122"
+// )
 
-type Connection struct {
-	username         string
-	serverAddrString string
-	localAddrString  string
-	remoteAddrString string
+var hostFlag string
+var portsFlag int
+var usernameFlag string
+var keyPathFlag string
+
+func main() {
+	currentUser, err := user.Current()
+	if err != nil {
+		log.Fatalf("Faile to get current user: %v", err)
+	}
+
+	flag.StringVar(&hostFlag, "h", "", "The remove host address. e.g. 10.0.0.11:22")
+	flag.IntVar(&portsFlag, "p", -777, "The ports to forward from the remote.")
+	flag.StringVar(&usernameFlag, "u", currentUser.Username, "Username to log in with.")
+	flag.StringVar(&keyPathFlag, "k", privateKeyPath(), "Path to the private key to use.")
+
+	flag.Parse()
+
+	if hostFlag == "" {
+		log.Fatalf("Host is required.")
+	}
+	if portsFlag == -777 {
+		log.Fatalf("Port to forward is required.")
+	}
+	if (portsFlag < 1) || (portsFlag > 65535) {
+		log.Fatalf("Port to forward is invalid.")
+	}
+
+	log.Println("Starting ssh tunnel v0.0.1")
+	fmt.Println("Config: ", hostFlag, portsFlag, usernameFlag, keyPathFlag)
+
+	key, err := parsePrivateKey(keyPathFlag)
+	if err != nil {
+		log.Fatalf("Parsing private key failed: %v", err)
+	}
+	log.Println("Loaded private key at " + privateKeyPath())
+
+	// Setup SSH config (type *ssh.ClientConfig)
+	config := &ssh.ClientConfig{
+		User: usernameFlag,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(key),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	// Setup localListener (type net.Listener)
+	localListener, err := net.Listen("tcp", "localhost:"+strconv.Itoa(portsFlag))
+	if err != nil {
+		log.Fatalf("net.Listen failed: %v", err)
+	}
+
+	log.Println("Port forward successful")
+
+	for {
+		// Setup localConn (type net.Conn)
+		localConn, err := localListener.Accept()
+		if err != nil {
+			log.Fatalf("listen.Accept failed: %v", err)
+		}
+		go forward(localConn, config)
+	}
 }
 
 func forward(localConn net.Conn, config *ssh.ClientConfig) {
 	// Setup sshClientConn (type *ssh.ClientConn)
-	sshClientConn, err := ssh.Dial("tcp", serverAddrString, config)
+	sshClientConn, err := ssh.Dial("tcp", "localhost:"+strconv.Itoa(portsFlag), config)
 	if err != nil {
 		log.Fatalf("ssh.Dial failed: %s", err)
 	}
 
 	// Setup sshConn (type net.Conn)
-	sshConn, err := sshClientConn.Dial("tcp", remoteAddrString)
+	sshConn, err := sshClientConn.Dial("tcp", strconv.Itoa(portsFlag))
 
 	if err != nil {
 		log.Println("Port forward successful")
@@ -54,48 +112,4 @@ func forward(localConn net.Conn, config *ssh.ClientConfig) {
 			log.Fatalf("io.Copy failed: %v", err)
 		}
 	}()
-}
-
-var hostFlag string
-var portsFlag string
-
-func main() {
-	log.Println("Starting ssh tunnel v0.0.1")
-
-	flag.StringVar(&hostFlag, "host", "localhost", "The remove server address.")
-	flag.StringVar(&portsFlag, "ports", "8545", "The ports to forward from the remote, in a comma separated list.")
-
-	// get flags
-
-	key, err := parsePrivateKey(privateKeyPath())
-	if err != nil {
-		log.Fatalf("parsePrivateKey failed: %v", err)
-	}
-	log.Println("Loaded private key at " + privateKeyPath())
-
-	// Setup SSH config (type *ssh.ClientConfig)
-	config := &ssh.ClientConfig{
-		User: username,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	// Setup localListener (type net.Listener)
-	localListener, err := net.Listen("tcp", localAddrString)
-	if err != nil {
-		log.Fatalf("net.Listen failed: %v", err)
-	}
-
-	log.Println("Port forward successful")
-
-	for {
-		// Setup localConn (type net.Conn)
-		localConn, err := localListener.Accept()
-		if err != nil {
-			log.Fatalf("listen.Accept failed: %v", err)
-		}
-		go forward(localConn, config)
-	}
 }
